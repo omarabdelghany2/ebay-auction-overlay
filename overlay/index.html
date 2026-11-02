@@ -139,41 +139,39 @@
      and (optionally) give each skin its own frame set. `anchor` = the
      character's foot-center in that animation's first frame.
      ===================================================================== */
-  const ANIMS = {
-    idle:   { name: "Idle__",   n: 10, fps: 10, loop: true,  anchor: { x: 116, y: 439 } },
-    run:    { name: "Run__",    n: 10, fps: 16, loop: true,  anchor: { x: 197, y: 446 } },
-    attack: { name: "Attack__", n: 10, fps: 20, loop: false, anchor: { x: 190, y: 454 } },
-    dead:   { name: "Dead__",   n: 10, fps: 14, loop: false, anchor: { x: 136, y: 467 } },
-  };
+  // Real character art sliced from the sprite sheets Wesley provided.
+  // Each skin has its own frames in assets/<skin>/ (Idle/Run/Attack/Dead).
   const SKINS = {
-    luffy: { label: "Luffy", base: "assets/ninja/", filter: "hue-rotate(95deg) saturate(1.6) brightness(1.05)" },
-    zoro:  { label: "Zoro",  base: "assets/ninja/", filter: "hue-rotate(200deg) saturate(1.25)" },
+    luffy: { label: "Luffy", base: "assets/luffy/", counts: { idle: 4, run: 3, attack: 3, dead: 1 } },
+    zoro:  { label: "Zoro",  base: "assets/zoro/",  counts: { idle: 4, run: 4, attack: 3, dead: 1 } },
   };
   const SKIN_ORDER = ["luffy", "zoro"];
+  const PREFIX  = { idle: "Idle__", run: "Run__", attack: "Attack__", dead: "Dead__" };
+  const TIMING  = { idle: { fps: 7, loop: true }, run: { fps: 12, loop: true }, attack: { fps: 14, loop: false }, dead: { fps: 6, loop: false } };
+  const ANCHOR  = { x: 47.5, y: 74 };    // foot-center on the shared 95x74 frame canvas
 
-  // load frames per base path (shared cache)
   const SPR = {};  // base -> {animKey:[Image]}
   let framesTotal = 0, framesDone = 0, assetsReady = false;
   (function loadAll() {
     const pad = (i) => String(i).padStart(3, "0");
-    const bases = [...new Set(Object.values(SKINS).map(s => s.base))];
-    for (const base of bases) {
-      SPR[base] = {};
-      for (const key in ANIMS) {
-        const a = ANIMS[key]; SPR[base][key] = [];
-        for (let i = 0; i < a.n; i++) {
+    for (const key in SKINS) {
+      const s = SKINS[key]; SPR[s.base] = {};
+      for (const an in s.counts) {
+        SPR[s.base][an] = [];
+        for (let i = 0; i < s.counts[an]; i++) {
           const img = new Image(); framesTotal++;
           const done = () => { if (++framesDone >= framesTotal) assetsReady = true; };
           img.onload = done; img.onerror = done;
-          img.src = base + a.name + pad(i) + ".png";
-          SPR[base][key].push(img);
+          img.src = s.base + PREFIX[an] + pad(i) + ".png";
+          SPR[s.base][an].push(img);
         }
       }
     }
   })();
 
+  const animDef = (e) => ({ n: SKINS[e.skin].counts[e.anim], fps: TIMING[e.anim].fps, loop: TIMING[e.anim].loop });
   function stepAnim(e, dt) {
-    const a = ANIMS[e.anim];
+    const a = animDef(e);
     e.at = (e.at || 0) + dt;
     const f = Math.floor(e.at * a.fps);
     if (a.loop) e.frame = f % a.n;
@@ -185,15 +183,14 @@
     e.anim = name; e.at = 0; e.frame = 0; e.animDone = false;
   }
   function drawFighter(e, scale) {
-    const a = ANIMS[e.anim];
-    const base = SKINS[e.skin].base;
-    const img = SPR[base] && SPR[base][e.anim] && SPR[base][e.anim][e.frame];
+    const frames = SPR[SKINS[e.skin].base] && SPR[SKINS[e.skin].base][e.anim];
+    const img = frames && frames[Math.min(e.frame, frames.length - 1)];
     if (!img || !img.complete || !img.naturalWidth) return;
     const fw = img.naturalWidth, fh = img.naturalHeight;
-    const dx = e.x - a.anchor.x * scale, dy = (e.y ?? GROUND) - a.anchor.y * scale;
+    const dx = e.x - ANCHOR.x * scale, dy = (e.y ?? GROUND) - ANCHOR.y * scale;
     ctx.save();
     if (e.alpha != null) ctx.globalAlpha = e.alpha;
-    ctx.filter = SKINS[e.skin].filter;
+    ctx.imageSmoothingEnabled = false;     // crisp pixel art
     if (e.face === "L") { ctx.translate(e.x, 0); ctx.scale(-1, 1); ctx.translate(-e.x, 0); }
     ctx.drawImage(img, dx, dy, fw * scale, fh * scale);
     ctx.restore();
@@ -203,7 +200,7 @@
      LAYOUT
      ===================================================================== */
   const GROUND  = 600;
-  const SCALE   = 0.74;
+  const SCALE   = 5.0;
   const CHAMP_X = 560;     // where the leader stands (faces right)
   const SPAWN_X = 1340;    // challengers run in from here...
   const CLASH_X = 806;     // ...to here, where they strike the leader
@@ -453,7 +450,7 @@
     }
     ctx.save(); ctx.shadowColor = COL.cyan; ctx.shadowBlur = 16; drawFighter(e, SCALE); ctx.restore();
     // crown over leader
-    drawCrown(e.x, GROUND - 60 - 439*SCALE + 6);
+    drawCrown(e.x, GROUND - 70 * SCALE);
   }
 
   function drawCrown(x, y) {
@@ -532,7 +529,7 @@
     ctx.save(); ctx.textAlign = "center";
     ctx.font = "18px 'Press Start 2P', monospace"; ctx.fillStyle = comboColor();
     ctx.shadowColor = comboColor(); ctx.shadowBlur = 14;
-    ctx.fillText("COMBO x" + state.combo, state.champ.x, GROUND - 360);
+    ctx.fillText("COMBO x" + state.combo, state.champ.x, GROUND - 400);
     ctx.restore(); ctx.shadowBlur = 0;
   }
 
