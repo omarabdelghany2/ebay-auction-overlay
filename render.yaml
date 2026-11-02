@@ -1,0 +1,29 @@
+# Render Blueprint — deploys the auction-overlay server (which also serves the overlay).
+# In Render:  New +  ->  Blueprint  ->  connect this repo (or paste its public URL).
+# Render reads this file and creates the service automatically.
+services:
+  - type: web
+    name: auction-overlay
+    runtime: node
+    rootDir: server
+    plan: free            # free sleeps after 15 min idle; use "starter" for always-on
+    buildCommand: npm install
+    startCommand: node server.js
+    autoDeploy: true
+    envVars:
+      - key: EBAY_ENV
+        value: production
+      - key: PUBLIC_URL          # set to the https URL Render gives you after first deploy
+        sync: false
+      - key: EBAY_APP_ID
+        sync: false
+      - key: EBAY_DEV_ID
+        sync: false
+      - key: EBAY_CERT_ID
+        sync: false
+      - key: EBAY_RUNAME
+        sync: false
+      - key: EBAY_VERIFICATION_TOKEN
+        sync: false
+      - key: EBAY_AUTH_TOKEN     # set from server logs after "Connect eBay", for persistence
+        sync: false

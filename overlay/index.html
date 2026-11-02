@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Live Auction Battle Overlay — Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+<style>
+  :root { --neon-pink:#ff2d7e; --neon-cyan:#49e0ff; --gold:#ffcf4d; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #05050c; overflow: hidden;
+    font-family: 'Press Start 2P', monospace;
+  }
+  body.transparent { background: transparent; }
+  #stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #scene { display: block; }
+
+  /* demo control panel */
+  #panel {
+    position: fixed; left: 16px; bottom: 16px; z-index: 50; width: 300px;
+    background: rgba(10,10,22,0.92); border: 2px solid var(--neon-cyan);
+    box-shadow: 0 0 18px rgba(73,224,255,0.45), inset 0 0 12px rgba(73,224,255,0.12);
+    color: #cfefff; padding: 14px; font-size: 10px; line-height: 1.6; user-select: none;
+  }
+  #panel.hidden { display: none; }
+  #panel h2 { margin: 0 0 10px; font-size: 11px; color: var(--neon-cyan); text-shadow: 0 0 8px var(--neon-cyan); letter-spacing: 1px; }
+  #panel .row { display: flex; gap: 6px; margin: 7px 0; align-items: center; }
+  #panel input[type=text], #panel input[type=number] {
+    flex: 1; min-width: 0; background: #06121c; border: 1px solid #2a6a82; color: #d7f4ff;
+    font-family: inherit; font-size: 9px; padding: 7px; outline: none;
+  }
+  #panel input:focus { border-color: var(--neon-cyan); box-shadow: 0 0 8px rgba(73,224,255,0.5); }
+  #panel button {
+    font-family: inherit; font-size: 9px; cursor: pointer; background: #10233a; color: #d7f4ff;
+    border: 1px solid #3a7fa0; padding: 8px 9px; transition: all .12s ease;
+  }
+  #panel button:hover { background: #1b3c5e; box-shadow: 0 0 10px rgba(73,224,255,0.5); }
+  #panel button.primary { background: var(--neon-pink); color: #fff; border-color: #ff7cae; }
+  #panel button.gold { background: var(--gold); color: #3a2600; border-color: #ffe08a; }
+  #panel button.full { width: 100%; }
+  #panel label { color: #7fd4ff; font-size: 9px; }
+  #panel input[type=range] { flex: 1; accent-color: var(--neon-cyan); }
+  #panel .hint { color: #5f8ba3; font-size: 8px; margin-top: 10px; line-height: 1.7; }
+  #toggleTip { position: fixed; right: 14px; bottom: 12px; z-index: 50; color: #3a6a82; font-size: 8px; opacity: .7; }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="scene" width="1280" height="720"></canvas></div>
+
+  <div id="panel">
+    <h2>⚔ AUCTION SIMULATOR</h2>
+    <div class="row">
+      <input type="text" id="nameInput" placeholder="bidder username" />
+      <input type="number" id="amtInput" placeholder="$" style="max-width:70px" />
+    </div>
+    <div class="row">
+      <button class="primary full" id="newBidBtn">NEW BIDDER (take the lead) ▶</button>
+    </div>
+    <div class="row">
+      <button class="full" id="holdBtn">Leader re-bids / max-bid hold (COMBO +1)</button>
+    </div>
+    <div class="row">
+      <button id="rapidBtn">Rapid bids</button>
+      <button class="gold" id="winnerBtn">End auction 🏆</button>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="autoChk" /> Auto</label>
+      <input type="range" id="autoSpeed" min="500" max="3500" value="1700" />
+      <button id="resetBtn">Reset</button>
+    </div>
+    <div class="hint">
+      Each bidder is a fighter with their name. A higher bid sends a<br/>
+      challenger in to defeat the leader. Same leader holding = combo.
+    </div>
+  </div>
+  <div id="toggleTip">[D] hide panel · [space] new bid · [C] combo · [W] winner</div>
+
+<script>
+/* =======================================================================
+   LIVE AUCTION BATTLE OVERLAY — demo / prototype
+   -----------------------------------------------------------------------
+   The current top bidder ("leader") stands on screen as a fighter showing
+   their username + bid. A higher bid sends a challenger in who defeats the
+   leader and takes their place. If the same person keeps the lead (e.g. a
+   max bid auto-countering others) a COMBO streak builds. When the auction
+   ends, the leader is crowned WINNER.
+
+   Two character skins (styled "Luffy" / "Zoro") alternate between the
+   fighters. Art is placeholder — swap real sprites in the SKIN block.
+
+   URL params:
+     ?bg=0       transparent background (OBS overlay over your eBay stream)
+     ?demo=0     hide the simulator panel (live use)
+     ?auto=1500  auto-fire bids every N ms (hands-free demo)
+     ?ws=URL     live WebSocket bid feed  { "type":"bid","username","amount" }
+     ?pose=clash|winner   freeze a frame (for screenshots)
+
+   Feed a bid from code (what the eBay connector calls):
+     AuctionOverlay.bid({ username:"hardworker706", amount: 42 })
+     AuctionOverlay.endAuction()
+   ======================================================================= */
+(() => {
+  "use strict";
+
+  const params = new URLSearchParams(location.search);
+  const SHOW_BG   = params.get("bg")   !== "0";
+  const SHOW_DEMO = params.get("demo") !== "0";
+  // explicit ?ws= wins; otherwise, when served over http(s), auto-connect to the
+  // same host (so a hosted overlay needs no ws param). file:// stays offline.
+  const WS_URL = params.get("ws") ||
+    (location.protocol.startsWith("http")
+      ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`
+      : null);
+  const AUTO      = parseInt(params.get("auto") || "0", 10);
+  if (!SHOW_BG) document.body.classList.add("transparent");
+
+  const canvas = document.getElementById("scene");
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  const W = 1280, H = 720;
+
+  function resize() {
+    const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+    canvas.style.width = Math.round(W * s) + "px";
+    canvas.style.height = Math.round(H * s) + "px";
+  }
+  window.addEventListener("resize", resize); resize();
+
+  const COL = { cyan:"#49e0ff", pink:"#ff2d7e", gold:"#ffcf4d" };
+
+  /* =====================================================================
+     SPRITE SKINS
+     Both fighters currently use the same (placeholder) sprite pack, tinted
+     into two looks. To use real custom art, point `base` at the new frames
+     and (optionally) give each skin its own frame set. `anchor` = the
+     character's foot-center in that animation's first frame.
+     ===================================================================== */
+  const ANIMS = {
+    idle:   { name: "Idle__",   n: 10, fps: 10, loop: true,  anchor: { x: 116, y: 439 } },
+    run:    { name: "Run__",    n: 10, fps: 16, loop: true,  anchor: { x: 197, y: 446 } },
+    attack: { name: "Attack__", n: 10, fps: 20, loop: false, anchor: { x: 190, y: 454 } },
+    dead:   { name: "Dead__",   n: 10, fps: 14, loop: false, anchor: { x: 136, y: 467 } },
+  };
+  const SKINS = {
+    luffy: { label: "Luffy", base: "assets/ninja/", filter: "hue-rotate(95deg) saturate(1.6) brightness(1.05)" },
+    zoro:  { label: "Zoro",  base: "assets/ninja/", filter: "hue-rotate(200deg) saturate(1.25)" },
+  };
+  const SKIN_ORDER = ["luffy", "zoro"];
+
+  // load frames per base path (shared cache)
+  const SPR = {};  // base -> {animKey:[Image]}
+  let framesTotal = 0, framesDone = 0, assetsReady = false;
+  (function loadAll() {
+    const pad = (i) => String(i).padStart(3, "0");
+    const bases = [...new Set(Object.values(SKINS).map(s => s.base))];
+    for (const base of bases) {
+      SPR[base] = {};
+      for (const key in ANIMS) {
+        const a = ANIMS[key]; SPR[base][key] = [];
+        for (let i = 0; i < a.n; i++) {
+          const img = new Image(); framesTotal++;
+          const done = () => { if (++framesDone >= framesTotal) assetsReady = true; };
+          img.onload = done; img.onerror = done;
+          img.src = base + a.name + pad(i) + ".png";
+          SPR[base][key].push(img);
+        }
+      }
+    }
+  })();
+
+  function stepAnim(e, dt) {
+    const a = ANIMS[e.anim];
+    e.at = (e.at || 0) + dt;
+    const f = Math.floor(e.at * a.fps);
+    if (a.loop) e.frame = f % a.n;
+    else if (f >= a.n) { e.frame = a.n - 1; e.animDone = true; }
+    else e.frame = f;
+  }
+  function setAnim(e, name) {
+    if (e.anim === name) return;
+    e.anim = name; e.at = 0; e.frame = 0; e.animDone = false;
+  }
+  function drawFighter(e, scale) {
+    const a = ANIMS[e.anim];
+    const base = SKINS[e.skin].base;
+    const img = SPR[base] && SPR[base][e.anim] && SPR[base][e.anim][e.frame];
+    if (!img || !img.complete || !img.naturalWidth) return;
+    const fw = img.naturalWidth, fh = img.naturalHeight;
+    const dx = e.x - a.anchor.x * scale, dy = (e.y ?? GROUND) - a.anchor.y * scale;
+    ctx.save();
+    if (e.alpha != null) ctx.globalAlpha = e.alpha;
+    ctx.filter = SKINS[e.skin].filter;
+    if (e.face === "L") { ctx.translate(e.x, 0); ctx.scale(-1, 1); ctx.translate(-e.x, 0); }
+    ctx.drawImage(img, dx, dy, fw * scale, fh * scale);
+    ctx.restore();
+  }
+
+  /* =====================================================================
+     LAYOUT
+     ===================================================================== */
+  const GROUND  = 600;
+  const SCALE   = 0.74;
+  const CHAMP_X = 560;     // where the leader stands (faces right)
+  const SPAWN_X = 1340;    // challengers run in from here...
+  const CLASH_X = 806;     // ...to here, where they strike the leader
+  const CONTACT = { x: 690, y: GROUND - 165 };
+
+  function makeFighter(name, amount, skin, x, face) {
+    return { name, amount, skin, x, y: GROUND, vx: 0, face,
+             anim: "idle", at: 0, frame: 0, animDone: false, alpha: 1, role: "" };
+  }
+
+  let skinToggle = 0;
+  const nextSkin = () => SKIN_ORDER[(skinToggle++) % 2];
+  const otherSkin = (s) => (s === "luffy" ? "zoro" : "luffy");
+
+  /* =====================================================================
+     STATE
+     ===================================================================== */
+  const state = {
+    phase: "idle",        // idle | takeover | winner
+    champ: null,          // standing leader (Fighter)
+    incoming: null,       // challenger during a takeover
+    outgoing: [],         // defeated fighters animating away
+    combo: 1,
+    topBid: 0,
+    queue: [],
+    feed: [],
+    sparks: [], pops: [], confetti: [],
+    shake: 0, flash: 0, champPulse: 0,
+    nameFlash: 0, winner: null, winTime: 0,
+  };
+
+  /* =====================================================================
+     BID LOGIC
+     ===================================================================== */
+  function enqueueBid(name, amount) {
+    name = String(name || "guest").slice(0, 18);
+    if (amount == null || isNaN(amount)) amount = state.topBid + Math.ceil(5 + Math.random() * 45);
+    amount = Math.max(amount, state.topBid + 1);
+    state.queue.push({ name, amount });
+  }
+
+  function processNext() {
+    const b = state.queue.shift();
+    state.topBid = b.amount;
+    state.feed.unshift({ name: b.name, amount: b.amount, t: 0 });
+    if (state.feed.length > 5) state.feed.pop();
+
+    if (!state.champ) {                       // first bidder becomes leader
+      state.champ = makeFighter(b.name, b.amount, nextSkin(), CHAMP_X, "R");
+      state.combo = 1; state.nameFlash = 1;
+      return;
+    }
+    if (b.name === state.champ.name) {         // leader holds / raises -> combo
+      holdLeader(b.amount);
+    } else {
+      startTakeover(b.name, b.amount);         // challenger takes the lead
+    }
+  }
+
+  function holdLeader(amount) {
+    state.champ.amount = amount;
+    state.combo++;
+    setAnim(state.champ, "attack");
+    state.champ._returnIdle = true;
+    state.champPulse = 1; state.nameFlash = 1;
+    state.shake = 10; state.flash = 0.5;
+    spawnSparks(state.champ.x + 70, GROUND - 150, COL.gold, 14);
+    spawnPop(state.champ.x, GROUND - 320, state.combo + "x COMBO!", comboColor());
+    burstConfetti(10);
+  }
+
+  function startTakeover(name, amount) {
+    const skin = state.champ ? otherSkin(state.champ.skin) : nextSkin();
+    const inc = makeFighter(name, amount, skin, SPAWN_X, "L");
+    inc.state = "run"; setAnim(inc, "run");
+    inc.pendingAmount = amount;
+    state.incoming = inc;
+    state.phase = "takeover";
+  }
+
+  function resolveClash() {
+    const inc = state.incoming;
+    setAnim(inc, "attack"); inc.clashT = 0;
+    // defeat the current leader
+    if (state.champ) {
+      const old = state.champ;
+      old.state = "dead"; setAnim(old, "dead");
+      old.vx = -260; old.face = "R";
+      state.outgoing.push(old);
+      state.champ = null;
+    }
+    state.combo = 1; state.nameFlash = 1;
+    state.shake = 22; state.flash = 1;
+    spawnSparks(CONTACT.x, CONTACT.y, COL.pink, 24);
+    spawnPop(CONTACT.x, CONTACT.y - 40, "NEW LEADER!", "#fff2b0");
+    state.contact = { ...CONTACT };
+  }
+
+  function endAuction() {
+    const w = state.champ || (state.incoming && state.incoming.state === "idle" ? state.incoming : null);
+    if (!w) return;
+    state.winner = w; state.phase = "winner"; state.winTime = 0;
+    setAnim(w, "attack"); w._loopAttack = true;
+    burstConfetti(80);
+  }
+
+  function resetAll() {
+    state.phase = "idle"; state.champ = null; state.incoming = null;
+    state.outgoing = []; state.combo = 1; state.topBid = 0; state.queue = [];
+    state.feed = []; state.sparks = []; state.pops = []; state.confetti = [];
+    state.winner = null; skinToggle = 0;
+  }
+
+  /* =====================================================================
+     FX
+     ===================================================================== */
+  function spawnSparks(x, y, c, n) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 150 + Math.random() * 600;
+      state.sparks.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - 120, life: 1,
+        col: Math.random() < 0.4 ? c : (Math.random() < 0.5 ? "#fff" : COL.gold), size: 2 + Math.random()*4 });
+    }
+  }
+  function spawnPop(x, y, text, col) { state.pops.push({ x, y, text, col, t: 0, life: 1, size: 40 }); }
+  function comboColor() {
+    const c = state.combo;
+    return c >= 15 ? "#ff5a2d" : c >= 10 ? COL.pink : c >= 5 ? COL.gold : "#fff2b0";
+  }
+  function burstConfetti(n) {
+    const cols = ["#ff2d7e","#49e0ff","#ffcf4d","#4dff9e","#b14bff","#ff6a3d","#ffffff"];
+    for (let i = 0; i < n; i++) {
+      state.confetti.push({ x: 200 + Math.random()*880, y: -20 - Math.random()*200,
+        vx: (Math.random()-0.5)*120, vy: 120 + Math.random()*220, rot: Math.random()*6.28,
+        vr: (Math.random()-0.5)*12, col: cols[(Math.random()*cols.length)|0],
+        w: 8 + Math.random()*8, h: 10 + Math.random()*10, life: 1 });
+    }
+  }
+
+  /* =====================================================================
+     UPDATE
+     ===================================================================== */
+  function update(dt) {
+    if (state.frozen) { ageFx(dt); return; }
+
+    // pull next queued bid when the stage is free
+    if (state.phase === "idle" && state.queue.length) processNext();
+
+    // leader idle / returning from a combo swing
+    if (state.champ) {
+      stepAnim(state.champ, dt);
+      if (state.champ._returnIdle && state.champ.anim === "attack" && state.champ.animDone) {
+        setAnim(state.champ, "idle"); state.champ._returnIdle = false;
+      }
+    }
+
+    // takeover choreography
+    if (state.phase === "takeover" && state.incoming) {
+      const inc = state.incoming;
+      if (inc.state === "run") {
+        stepAnim(inc, dt); inc.x += -1350 * dt;
+        if (inc.x <= CLASH_X) { inc.x = CLASH_X; inc.state = "clash"; resolveClash(); }
+      } else if (inc.state === "clash") {
+        stepAnim(inc, dt); inc.clashT += dt;
+        if (inc.clashT > 0.42) { inc.state = "advance"; setAnim(inc, "run"); }
+      } else if (inc.state === "advance") {
+        stepAnim(inc, dt); inc.x += -1100 * dt;
+        if (inc.x <= CHAMP_X) {
+          inc.x = CHAMP_X; inc.state = "idle"; inc.face = "R"; setAnim(inc, "idle");
+          inc.amount = inc.pendingAmount;
+          state.champ = inc; state.incoming = null; state.phase = "idle";
+        }
+      }
+    }
+
+    // defeated fighters fly out + fade
+    for (const o of state.outgoing) {
+      stepAnim(o, dt); o.x += o.vx * dt; o.vx *= 0.9; o.alpha -= dt * 1.3;
+    }
+    state.outgoing = state.outgoing.filter(o => o.alpha > 0);
+
+    // winner pose loops attack
+    if (state.phase === "winner" && state.winner) {
+      state.winTime += dt;
+      stepAnim(state.winner, dt);
+      if (state.winner._loopAttack && state.winner.animDone) setAnim(state.winner, "attack");
+      if (state.winTime > 2.2 && (state.winTime % 2.4) < dt) burstConfetti(30);
+    }
+
+    ageFx(dt);
+  }
+
+  function ageFx(dt) {
+    for (const s of state.sparks) { s.x += s.vx*dt; s.y += s.vy*dt; s.vy += 1400*dt; s.life -= dt*2.2; }
+    state.sparks = state.sparks.filter(s => s.life > 0);
+    for (const p of state.pops) { p.t += dt; p.life -= dt*0.9; p.y -= dt*26; }
+    state.pops = state.pops.filter(p => p.life > 0);
+    for (const c of state.confetti) { c.x += c.vx*dt; c.y += c.vy*dt; c.rot += c.vr*dt; c.vy += 120*dt; if (c.y > H+40) c.life = 0; }
+    state.confetti = state.confetti.filter(c => c.life > 0);
+    for (const f of state.feed) f.t += dt;
+    state.shake = Math.max(0, state.shake - dt*60);
+    state.flash = Math.max(0, state.flash - dt*3.2);
+    state.champPulse = Math.max(0, state.champPulse - dt*2.5);
+    state.nameFlash = Math.max(0, state.nameFlash - dt*2);
+  }
+
+  /* =====================================================================
+     BACKGROUND
+     ===================================================================== */
+  let bgCache = null;
+  (function buildBG() {
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const g = c.getContext("2d");
+    const grad = g.createLinearGradient(0,0,0,H);
+    grad.addColorStop(0,"#1a0b2e"); grad.addColorStop(.5,"#120a24"); grad.addColorStop(1,"#05050c");
+    g.fillStyle = grad; g.fillRect(0,0,W,H);
+    for (const [x,y,w,h,col] of [[120,110,150,60,"#ff2d7e"],[980,80,180,70,"#49e0ff"],[770,170,90,120,"#b14bff"],[300,210,70,90,"#4dff9e"],[1080,290,60,140,"#ff6a3d"]]) {
+      g.save(); g.globalAlpha=.2; g.shadowColor=col; g.shadowBlur=40; g.strokeStyle=col; g.lineWidth=4; g.strokeRect(x,y,w,h); g.restore();
+    }
+    g.save(); g.globalAlpha=.10; g.font="220px sans-serif"; g.textAlign="center";
+    g.fillStyle="#ff2d7e"; g.shadowColor="#ff2d7e"; g.shadowBlur=30; g.fillText("忍",250,360);
+    g.fillStyle="#49e0ff"; g.shadowColor="#49e0ff"; g.fillText("闘",1030,420); g.restore();
+    g.save(); g.strokeStyle="rgba(73,224,255,0.18)"; g.lineWidth=2; const hz=600;
+    for (let i=-10;i<=10;i++){ g.beginPath(); g.moveTo(W/2+i*34,hz); g.lineTo(W/2+i*240,H); g.stroke(); }
+    for (let j=0;j<8;j++){ const y=hz+Math.pow(j/8,2)*(H-hz)+6; g.beginPath(); g.moveTo(0,y); g.lineTo(W,y); g.stroke(); }
+    g.restore();
+    const vg = g.createRadialGradient(W/2,H/2,200,W/2,H/2,820);
+    vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(0,0,0,0.75)");
+    g.fillStyle=vg; g.fillRect(0,0,W,H);
+    bgCache = c;
+  })();
+
+  /* =====================================================================
+     RENDER HELPERS
+     ===================================================================== */
+  function groundShadow(x, rx, alpha) {
+    ctx.save(); ctx.fillStyle = `rgba(0,0,0,${alpha})`;
+    ctx.beginPath(); ctx.ellipse(x, GROUND + 4, rx, 15, 0, 0, Math.PI*2); ctx.fill(); ctx.restore();
+  }
+
+  function drawLeader() {
+    const e = state.champ; if (!e) return;
+    groundShadow(e.x, 70, 0.38);
+    if (state.champPulse > 0) {
+      ctx.save(); ctx.globalAlpha = state.champPulse*0.5;
+      ctx.strokeStyle = COL.gold; ctx.lineWidth = 4; ctx.shadowColor = COL.gold; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.ellipse(e.x, GROUND-130, 120*(1+ (1-state.champPulse)), 150, 0,0,Math.PI*2); ctx.stroke(); ctx.restore();
+    }
+    ctx.save(); ctx.shadowColor = COL.cyan; ctx.shadowBlur = 16; drawFighter(e, SCALE); ctx.restore();
+    // crown over leader
+    drawCrown(e.x, GROUND - 60 - 439*SCALE + 6);
+  }
+
+  function drawCrown(x, y) {
+    ctx.save(); ctx.translate(x, y); ctx.fillStyle = COL.gold; ctx.shadowColor = COL.gold; ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.moveTo(-22,8); ctx.lineTo(-22,-10); ctx.lineTo(-10,2); ctx.lineTo(0,-14);
+    ctx.lineTo(10,2); ctx.lineTo(22,-10); ctx.lineTo(22,8); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#fff6cf"; ctx.fillRect(-22,8,44,4); ctx.restore();
+  }
+
+  function drawChallenger() {
+    const inc = state.incoming; if (!inc) return;
+    if (inc.state === "run" || inc.state === "advance") {
+      groundShadow(inc.x, 62, 0.33);
+      ctx.save(); ctx.strokeStyle = SKINS[inc.skin].filter ? "#ffffff" : "#fff"; ctx.globalAlpha=.25; ctx.lineWidth=3;
+      for (let i=0;i<4;i++){ const yy=GROUND-230+i*42; ctx.beginPath(); ctx.moveTo(inc.x+80,yy); ctx.lineTo(inc.x+170,yy); ctx.stroke(); }
+      ctx.restore();
+    }
+    ctx.save(); ctx.shadowColor = COL.pink; ctx.shadowBlur = 16; drawFighter(inc, SCALE); ctx.restore();
+  }
+
+  function drawOutgoing() {
+    for (const o of state.outgoing) { ctx.save(); drawFighter(o, SCALE); ctx.restore(); }
+  }
+
+  function drawSparks() {
+    for (const s of state.sparks) {
+      ctx.globalAlpha = Math.max(0,s.life); ctx.fillStyle = s.col; ctx.shadowColor = s.col; ctx.shadowBlur = 10;
+      ctx.fillRect(s.x - s.size/2, s.y - s.size/2, s.size, s.size);
+    }
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  }
+  function drawFlash() {
+    if (state.flash < 0.3 || !state.contact) return;
+    const cp = state.contact; ctx.save(); ctx.globalAlpha = state.flash; ctx.translate(cp.x, cp.y);
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.shadowColor = COL.gold; ctx.shadowBlur = 24;
+    const R = 60 + (1-state.flash)*120;
+    for (let i=0;i<10;i++){ const a=(i/10)*6.28+state.flash; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*R,Math.sin(a)*R); ctx.stroke(); }
+    ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(0,0,14*state.flash+6,0,6.28); ctx.fill(); ctx.restore();
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  }
+  function drawConfetti() {
+    for (const c of state.confetti) {
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.rot); ctx.fillStyle = c.col;
+      ctx.globalAlpha = Math.max(0, Math.min(1, c.life)); ctx.fillRect(-c.w/2, -c.h/2, c.w, c.h); ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* =====================================================================
+     HUD
+     ===================================================================== */
+  function drawPops() {
+    for (const p of state.pops) {
+      const scale = 0.6 + Math.min(1, p.t*7) * (1 + (1-p.life)*0.4);
+      ctx.save(); ctx.globalAlpha = Math.min(1, p.life*1.6); ctx.translate(p.x, p.y); ctx.scale(scale, scale);
+      ctx.textAlign = "center"; ctx.font = p.size + "px 'Press Start 2P', monospace";
+      ctx.lineWidth = 8; ctx.strokeStyle = "#1a0010"; ctx.strokeText(p.text, 0, 0);
+      ctx.shadowColor = p.col; ctx.shadowBlur = 24; ctx.fillStyle = p.col; ctx.fillText(p.text, 0, 0); ctx.restore();
+    }
+    ctx.shadowBlur = 0;
+  }
+
+  function drawHighBid() {
+    ctx.save(); ctx.textAlign = "center";
+    ctx.font = "13px 'Press Start 2P', monospace"; ctx.fillStyle = "#8fe9ff";
+    ctx.fillText("HIGH BID", W/2, 54);
+    ctx.font = "30px 'Press Start 2P', monospace"; ctx.fillStyle = COL.gold;
+    ctx.shadowColor = COL.gold; ctx.shadowBlur = 14;
+    ctx.fillText("$" + (state.topBid || 0), W/2, 92);
+    ctx.restore(); ctx.shadowBlur = 0;
+  }
+
+  function drawComboBadge() {
+    if (state.combo <= 1 || !state.champ) return;
+    ctx.save(); ctx.textAlign = "center";
+    ctx.font = "18px 'Press Start 2P', monospace"; ctx.fillStyle = comboColor();
+    ctx.shadowColor = comboColor(); ctx.shadowBlur = 14;
+    ctx.fillText("COMBO x" + state.combo, state.champ.x, GROUND - 360);
+    ctx.restore(); ctx.shadowBlur = 0;
+  }
+
+  function drawNameplate() {
+    const e = state.champ || (state.phase === "takeover" && state.incoming) || null;
+    if (!e || !e.name) return;
+    const boxW = 560, boxH = 80, x = (W-boxW)/2, y = H - 118;
+    const fl = state.nameFlash;
+    ctx.save();
+    ctx.fillStyle = "rgba(8,6,18,0.82)"; ctx.fillRect(x, y, boxW, boxH);
+    ctx.lineWidth = 3; ctx.strokeStyle = COL.pink; ctx.shadowColor = COL.pink; ctx.shadowBlur = 14 + fl*24;
+    ctx.strokeRect(x, y, boxW, boxH); ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255,45,126,0.35)"; ctx.strokeRect(x+6, y+6, boxW-12, boxH-12);
+    ctx.textAlign = "center";
+    ctx.font = "11px 'Press Start 2P', monospace"; ctx.fillStyle = "#8fe9ff";
+    ctx.fillText("👑  CURRENT LEADER  ·  " + SKINS[e.skin].label, W/2, y - 12);
+    ctx.font = "24px 'Press Start 2P', monospace"; ctx.lineWidth = 6; ctx.strokeStyle = "#000";
+    const label = e.name + "   $" + (e.amount || state.topBid);
+    ctx.strokeText(label, W/2, y + 52);
+    ctx.shadowColor = "#fff"; ctx.shadowBlur = fl*18; ctx.fillStyle = "#fff"; ctx.fillText(label, W/2, y + 52);
+    ctx.restore(); ctx.shadowBlur = 0;
+  }
+
+  function drawFeed() {
+    if (!state.feed.length) return;
+    const x = W - 300, y0 = 150;
+    ctx.save(); ctx.textAlign = "left"; ctx.font = "10px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#6fbfe0"; ctx.fillText("RECENT BIDS", x, y0 - 16);
+    for (let i=0;i<state.feed.length;i++){
+      const f = state.feed[i], y = y0 + i*30, a = Math.max(.25, 1 - i*0.18);
+      ctx.globalAlpha = a; ctx.fillStyle = COL.gold; ctx.fillRect(x, y-10, 8, 12);
+      ctx.fillStyle = "#dff2ff"; ctx.fillText(`${f.name}  $${f.amount}`, x+16, y);
+    }
+    ctx.globalAlpha = 1; ctx.restore();
+  }
+
+  function drawWinner() {
+    if (state.phase !== "winner" || !state.winner) return;
+    const t = state.winTime, w = state.winner;
+    ctx.save(); ctx.fillStyle = "rgba(4,2,12,0.55)"; ctx.fillRect(0,0,W,H); ctx.restore();
+    // big winner fighter
+    const sc = SCALE * 1.5;
+    const saved = { x: w.x, y: w.y, face: w.face };
+    w.x = W/2; w.y = GROUND + 10; w.face = "R";
+    groundShadow(W/2, 110, 0.4);
+    ctx.save(); ctx.shadowColor = COL.gold; ctx.shadowBlur = 30; drawFighter(w, sc); ctx.restore();
+    w.x = saved.x; w.y = saved.y; w.face = saved.face;
+    // banner
+    const pop = Math.min(1, t*4);
+    ctx.save(); ctx.textAlign = "center"; ctx.translate(W/2, 150); ctx.scale(pop, pop);
+    ctx.font = "64px 'Press Start 2P', monospace"; ctx.lineWidth = 10; ctx.strokeStyle = "#2a1800";
+    ctx.strokeText("WINNER!", 0, 0);
+    ctx.shadowColor = COL.gold; ctx.shadowBlur = 28; ctx.fillStyle = COL.gold; ctx.fillText("WINNER!", 0, 0);
+    ctx.restore();
+    // winner name
+    ctx.save(); ctx.textAlign = "center";
+    ctx.font = "28px 'Press Start 2P', monospace"; ctx.lineWidth = 7; ctx.strokeStyle = "#000";
+    const label = w.name + "  ·  $" + (w.amount || state.topBid);
+    ctx.strokeText(label, W/2, 232);
+    ctx.shadowColor = "#fff"; ctx.shadowBlur = 16; ctx.fillStyle = "#fff"; ctx.fillText(label, W/2, 232);
+    ctx.restore(); ctx.shadowBlur = 0;
+  }
+
+  /* =====================================================================
+     MAIN LOOP
+     ===================================================================== */
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now; update(dt);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    if (state.shake > 0) ctx.translate((Math.random()-.5)*state.shake, (Math.random()-.5)*state.shake);
+    if (SHOW_BG && bgCache) ctx.drawImage(bgCache, 0, 0);
+    drawOutgoing();
+    drawChallenger();
+    drawLeader();
+    drawFlash(); drawSparks();
+    ctx.restore();
+    if (state.flash > 0.5) { ctx.fillStyle = `rgba(255,255,255,${(state.flash-0.5)*0.4})`; ctx.fillRect(0,0,W,H); }
+    // HUD
+    drawHighBid(); drawComboBadge(); drawFeed(); drawPops(); drawNameplate();
+    drawWinner();
+    drawConfetti();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  /* =====================================================================
+     PUBLIC API + INTEGRATIONS
+     ===================================================================== */
+  window.AuctionOverlay = {
+    bid: (o = {}) => enqueueBid(o.username, o.amount),
+    endAuction, reset: resetAll,
+  };
+  window.addEventListener("message", (e) => {
+    const d = e.data; if (!d) return;
+    if (d.type === "ninja-bid" || d.type === "bid") enqueueBid(d.username, d.amount);
+    if (d.type === "end-auction") endAuction();
+  });
+  if (WS_URL) {
+    try {
+      const ws = new WebSocket(WS_URL);
+      ws.onmessage = (ev) => { try { const d = JSON.parse(ev.data);
+        if (d.type === "bid") enqueueBid(d.username, d.amount);
+        if (d.type === "end" || d.type === "winner") endAuction();
+      } catch(_){} };
+      ws.onopen = () => console.log("[AuctionOverlay] WS connected", WS_URL);
+    } catch(e) { console.warn("WS failed", e); }
+  }
+
+  /* =====================================================================
+     DEMO PANEL
+     ===================================================================== */
+  const panel = document.getElementById("panel");
+  if (!SHOW_DEMO) { panel.classList.add("hidden"); document.getElementById("toggleTip").style.display = "none"; }
+  const NAMES = ["hardworker706","sneaky_sora","ghost_bidder","NeonSamurai","bid_shinobi","kaiju_collector","pixelpunk99","midnight_kat","dragon_yen","retro_ronin"];
+  const randName = () => NAMES[(Math.random()*NAMES.length)|0];
+  const nameInput = document.getElementById("nameInput");
+  const amtInput = document.getElementById("amtInput");
+  nameInput.value = randName();
+
+  function newBid()  { enqueueBid(nameInput.value.trim() || randName(), amtInput.value ? +amtInput.value : null); nameInput.value = randName(); amtInput.value = ""; }
+  function holdBid() { const n = state.champ ? state.champ.name : (nameInput.value.trim() || randName()); enqueueBid(n, (state.topBid||10) + Math.ceil(5+Math.random()*30)); }
+
+  document.getElementById("newBidBtn").onclick = newBid;
+  document.getElementById("holdBtn").onclick = holdBid;
+  document.getElementById("rapidBtn").onclick = () => { for (let i=0;i<5;i++) setTimeout(() => enqueueBid(randName(), null), i*120); };
+  document.getElementById("winnerBtn").onclick = endAuction;
+  document.getElementById("resetBtn").onclick = resetAll;
+  nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") newBid(); });
+
+  let autoTimer = null;
+  const autoChk = document.getElementById("autoChk"), autoSpeed = document.getElementById("autoSpeed");
+  function syncAuto() {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    if (autoChk.checked) autoTimer = setInterval(() => {
+      // mostly new bidders, sometimes the leader holds (to show combos)
+      if (state.champ && Math.random() < 0.4) holdBid(); else enqueueBid(randName(), null);
+    }, +autoSpeed.value);
+  }
+  autoChk.onchange = syncAuto; autoSpeed.oninput = () => autoChk.checked && syncAuto();
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "d" || e.key === "D") panel.classList.toggle("hidden");
+    if (e.key === "w" || e.key === "W") endAuction();
+    if (e.key === "c" || e.key === "C") holdBid();
+    if (e.code === "Space" && document.activeElement !== nameInput && document.activeElement !== amtInput) { e.preventDefault(); newBid(); }
+  });
+
+  /* ?pose=clash|winner — freeze a frame for screenshots */
+  function buildPose(kind) {
+    state.champ = makeFighter("hardworker706", 42, "luffy", CHAMP_X, "R"); state.topBid = 42; state.combo = 4;
+    state.feed = [{name:"hardworker706",amount:42,t:0},{name:"sneaky_sora",amount:35,t:.3},{name:"ghost_bidder",amount:28,t:.6}];
+    if (kind === "winner") { endAuction(); state.winTime = 1.2; }
+    else {
+      const inc = makeFighter("sneaky_sora", 55, "zoro", CLASH_X, "L"); inc.state = "clash"; inc.clashT = 0.1; setAnim(inc, "attack"); inc.pendingAmount = 55;
+      const old = makeFighter("hardworker706", 42, "luffy", CHAMP_X+30, "R"); old.state="dead"; setAnim(old,"dead"); old.frame=2; old.alpha=0.8; old.vx=-260;
+      state.outgoing = [old]; state.champ = null; state.incoming = inc; state.phase = "takeover";
+      state.contact = {...CONTACT}; state.flash = 0.85; spawnSparks(CONTACT.x,CONTACT.y,COL.pink,26); spawnPop(CONTACT.x,CONTACT.y-40,"NEW LEADER!","#fff2b0");
+    }
+    state.frozen = true;
+  }
+
+  (function kickoff() {
+    if (!assetsReady) { setTimeout(kickoff, 100); return; }
+    const pose = params.get("pose");
+    if (pose) { buildPose(pose); return; }
+    setTimeout(() => enqueueBid("hardworker706", 42), 400);
+    if (AUTO > 0) setInterval(() => { if (state.champ && Math.random()<0.4) holdBid(); else enqueueBid(randName(), null); }, AUTO);
+  })();
+
+})();
+</script>
+</body>
+</html>
