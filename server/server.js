@@ -250,6 +250,21 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && p === "/end") { broadcast({ type: "end" }); return sendJSON(200, { ok: true }); }
   if (req.method === "GET" && p === "/status") return sendJSON(200, { overlays: clients.size, ebayConnected: Boolean(authToken), subscribed, env: ENV });
 
+  // privacy policy — required by eBay when creating the RuName
+  if (req.method === "GET" && p === "/privacy") {
+    return sendHTML(200, `<!doctype html><html><head><meta charset="utf-8"><title>Privacy Policy</title>
+    <style>body{font-family:system-ui,Arial;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.6;color:#222}</style></head><body>
+    <h1>Privacy Policy — Auction Overlay</h1>
+    <p>This application shows live auction bid activity (bidder username and bid amount) as an on-stream overlay for the seller running their own eBay Live auction.</p>
+    <ul>
+      <li>It receives bid events from eBay only for the connected seller's own auctions.</li>
+      <li>Bidder usernames are displayed on screen only during the live auction. They are not sold, shared, or used for any other purpose.</li>
+      <li>No personal data is stored beyond what is needed to display the current auction state.</li>
+      <li>The eBay authorization token is used solely to receive bid notifications and is never shared with third parties.</li>
+    </ul>
+    <p>Contact the overlay operator with any questions. <a href="/">Home</a></p></body></html>`);
+  }
+
   sendJSON(404, { error: "not found" });
 });
 
