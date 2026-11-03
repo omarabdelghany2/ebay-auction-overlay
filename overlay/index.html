@@ -61,7 +61,7 @@
       <button class="primary full" id="newBidBtn">NEW BIDDER (take the lead) ▶</button>
     </div>
     <div class="row">
-      <button class="full" id="holdBtn">Leader re-bids / max-bid hold (COMBO +1)</button>
+      <button class="full" id="holdBtn">Max-bid holds → challenger BLOCKED (COMBO +1)</button>
     </div>
     <div class="row">
       <button id="rapidBtn">Rapid bids</button>
@@ -142,8 +142,8 @@
   // Real character art sliced from the sprite sheets Wesley provided.
   // Each skin has its own frames in assets/<skin>/ (Idle/Run/Attack/Dead).
   const SKINS = {
-    luffy: { label: "Luffy", base: "assets/luffy/", counts: { idle: 4, run: 3, attack: 3, dead: 1 } },
-    zoro:  { label: "Zoro",  base: "assets/zoro/",  counts: { idle: 4, run: 4, attack: 3, dead: 1 } },
+    luffy: { label: "Luffy", base: "assets/luffy/", counts: { idle: 4, run: 3, attack: 3, dead: 1 }, scale: 1.0 },
+    zoro:  { label: "Zoro",  base: "assets/zoro/",  counts: { idle: 4, run: 4, attack: 3, dead: 1 }, scale: 1.14 },
   };
   const SKIN_ORDER = ["luffy", "zoro"];
   const PREFIX  = { idle: "Idle__", run: "Run__", attack: "Attack__", dead: "Dead__" };
@@ -186,13 +186,14 @@
     const frames = SPR[SKINS[e.skin].base] && SPR[SKINS[e.skin].base][e.anim];
     const img = frames && frames[Math.min(e.frame, frames.length - 1)];
     if (!img || !img.complete || !img.naturalWidth) return;
+    const sc = scale * (SKINS[e.skin].scale || 1);   // per-skin size so both match
     const fw = img.naturalWidth, fh = img.naturalHeight;
-    const dx = e.x - ANCHOR.x * scale, dy = (e.y ?? GROUND) - ANCHOR.y * scale;
+    const dx = e.x - ANCHOR.x * sc, dy = (e.y ?? GROUND) - ANCHOR.y * sc;
     ctx.save();
     if (e.alpha != null) ctx.globalAlpha = e.alpha;
     ctx.imageSmoothingEnabled = false;     // crisp pixel art
     if (e.face === "L") { ctx.translate(e.x, 0); ctx.scale(-1, 1); ctx.translate(-e.x, 0); }
-    ctx.drawImage(img, dx, dy, fw * scale, fh * scale);
+    ctx.drawImage(img, dx, dy, fw * sc, fh * sc);
     ctx.restore();
   }
 
@@ -228,18 +229,18 @@
     queue: [],
     feed: [],
     sparks: [], pops: [], confetti: [],
-    shake: 0, flash: 0, champPulse: 0,
+    shake: 0, flash: 0, champPulse: 0, block: 0,
     nameFlash: 0, winner: null, winTime: 0,
   };
 
   /* =====================================================================
      BID LOGIC
      ===================================================================== */
-  function enqueueBid(name, amount) {
+  function enqueueBid(name, amount, kind) {
     name = String(name || "guest").slice(0, 18);
     if (amount == null || isNaN(amount)) amount = state.topBid + Math.ceil(5 + Math.random() * 45);
     amount = Math.max(amount, state.topBid + 1);
-    state.queue.push({ name, amount });
+    state.queue.push({ name, amount, kind: kind || "takeover" });
   }
 
   function processNext() {
@@ -253,23 +254,35 @@
       state.combo = 1; state.nameFlash = 1;
       return;
     }
-    if (b.name === state.champ.name) {         // leader holds / raises -> combo
-      holdLeader(b.amount);
+    if (b.kind === "block") {                  // max-bid holds -> challenger blocked
+      startBlock(b.name, b.amount);
     } else {
       startTakeover(b.name, b.amount);         // challenger takes the lead
     }
   }
 
-  function holdLeader(amount) {
-    state.champ.amount = amount;
+  // a challenger attacks but the max-bidder (leader) blocks it -> combo up, leader stays
+  function startBlock(name, amount) {
+    const inc = makeFighter(name, amount, otherSkin(state.champ.skin), SPAWN_X, "L");
+    inc.state = "run"; inc.blocked = true; inc.pendingAmount = amount;
+    setAnim(inc, "run");
+    state.incoming = inc; state.phase = "takeover";
+  }
+
+  function resolveBlock() {
+    const inc = state.incoming;
+    setAnim(inc, "attack"); inc.clashT = 0;       // attacker strikes...
     state.combo++;
-    setAnim(state.champ, "attack");
+    state.champ.amount = inc.pendingAmount;         // max-bidder auto-raises to hold
+    setAnim(state.champ, "attack");                 // ...leader parries / blocks it
     state.champ._returnIdle = true;
-    state.champPulse = 1; state.nameFlash = 1;
-    state.shake = 10; state.flash = 0.5;
-    spawnSparks(state.champ.x + 70, GROUND - 150, COL.gold, 14);
-    spawnPop(state.champ.x, GROUND - 320, state.combo + "x COMBO!", comboColor());
-    burstConfetti(10);
+    state.nameFlash = 1; state.champPulse = 1; state.shake = 14; state.flash = 0.6; state.block = 1;
+    const cp = { x: state.champ.x + 70, y: GROUND - 165 };
+    state.contact = cp;
+    spawnSparks(cp.x, cp.y, COL.cyan, 20);
+    spawnPop(cp.x, cp.y - 55, "BLOCKED!", COL.cyan);
+    spawnPop(state.champ.x, GROUND - 430, state.combo + "x COMBO!", comboColor());
+    burstConfetti(8);
   }
 
   function startTakeover(name, amount) {
@@ -361,10 +374,16 @@
       const inc = state.incoming;
       if (inc.state === "run") {
         stepAnim(inc, dt); inc.x += -1350 * dt;
-        if (inc.x <= CLASH_X) { inc.x = CLASH_X; inc.state = "clash"; resolveClash(); }
+        if (inc.x <= CLASH_X) { inc.x = CLASH_X; inc.state = "clash"; inc.blocked ? resolveBlock() : resolveClash(); }
       } else if (inc.state === "clash") {
         stepAnim(inc, dt); inc.clashT += dt;
-        if (inc.clashT > 0.42) { inc.state = "advance"; setAnim(inc, "run"); }
+        if (inc.clashT > 0.42) {
+          if (inc.blocked) { inc.state = "recoil"; inc.vx = 520; setAnim(inc, "run"); }
+          else { inc.state = "advance"; setAnim(inc, "run"); }
+        }
+      } else if (inc.state === "recoil") {
+        stepAnim(inc, dt); inc.x += inc.vx * dt; inc.vx *= 0.9; inc.alpha -= dt * 1.7;
+        if (inc.alpha <= 0) { state.incoming = null; state.phase = "idle"; }
       } else if (inc.state === "advance") {
         stepAnim(inc, dt); inc.x += -1100 * dt;
         if (inc.x <= CHAMP_X) {
@@ -403,6 +422,7 @@
     state.shake = Math.max(0, state.shake - dt*60);
     state.flash = Math.max(0, state.flash - dt*3.2);
     state.champPulse = Math.max(0, state.champPulse - dt*2.5);
+    state.block = Math.max(0, state.block - dt*2.2);
     state.nameFlash = Math.max(0, state.nameFlash - dt*2);
   }
 
@@ -483,6 +503,17 @@
     }
     ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   }
+  // cyan guard arc shown when the leader blocks a max-bid attack
+  function drawBlock() {
+    if (state.block <= 0 || !state.champ) return;
+    const x = state.champ.x + 60, y = GROUND - 165, r = 66 + (1 - state.block) * 46;
+    ctx.save(); ctx.globalAlpha = state.block;
+    ctx.strokeStyle = COL.cyan; ctx.lineWidth = 7; ctx.shadowColor = COL.cyan; ctx.shadowBlur = 22;
+    ctx.beginPath(); ctx.arc(x, y, r, -Math.PI * 0.58, Math.PI * 0.58); ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = "#ffffff";
+    ctx.beginPath(); ctx.arc(x, y, r, -Math.PI * 0.42, Math.PI * 0.42); ctx.stroke();
+    ctx.restore(); ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  }
   function drawFlash() {
     if (state.flash < 0.3 || !state.contact) return;
     const cp = state.contact; ctx.save(); ctx.globalAlpha = state.flash; ctx.translate(cp.x, cp.y);
@@ -545,7 +576,7 @@
     ctx.strokeStyle = "rgba(255,45,126,0.35)"; ctx.strokeRect(x+6, y+6, boxW-12, boxH-12);
     ctx.textAlign = "center";
     ctx.font = "11px 'Press Start 2P', monospace"; ctx.fillStyle = "#8fe9ff";
-    ctx.fillText("👑  CURRENT LEADER  ·  " + SKINS[e.skin].label, W/2, y - 12);
+    ctx.fillText("👑  CURRENT LEADER", W/2, y - 12);
     ctx.font = "24px 'Press Start 2P', monospace"; ctx.lineWidth = 6; ctx.strokeStyle = "#000";
     const label = e.name + "   $" + (e.amount || state.topBid);
     ctx.strokeText(label, W/2, y + 52);
@@ -606,7 +637,7 @@
     drawOutgoing();
     drawChallenger();
     drawLeader();
-    drawFlash(); drawSparks();
+    drawBlock(); drawFlash(); drawSparks();
     ctx.restore();
     if (state.flash > 0.5) { ctx.fillStyle = `rgba(255,255,255,${(state.flash-0.5)*0.4})`; ctx.fillRect(0,0,W,H); }
     // HUD
@@ -652,7 +683,7 @@
   nameInput.value = randName();
 
   function newBid()  { enqueueBid(nameInput.value.trim() || randName(), amtInput.value ? +amtInput.value : null); nameInput.value = randName(); amtInput.value = ""; }
-  function holdBid() { const n = state.champ ? state.champ.name : (nameInput.value.trim() || randName()); enqueueBid(n, (state.topBid||10) + Math.ceil(5+Math.random()*30)); }
+  function holdBid() { enqueueBid(randName(), (state.topBid||10) + Math.ceil(5+Math.random()*30), "block"); }
 
   document.getElementById("newBidBtn").onclick = newBid;
   document.getElementById("holdBtn").onclick = holdBid;
@@ -684,8 +715,14 @@
     state.champ = makeFighter("hardworker706", 42, "luffy", CHAMP_X, "R"); state.topBid = 42; state.combo = 4;
     state.feed = [{name:"hardworker706",amount:42,t:0},{name:"sneaky_sora",amount:35,t:.3},{name:"ghost_bidder",amount:28,t:.6}];
     if (kind === "winner") { endAuction(); state.winTime = 1.2; }
-    else {
-      const inc = makeFighter("sneaky_sora", 55, "zoro", CLASH_X, "L"); inc.state = "clash"; inc.clashT = 0.1; setAnim(inc, "attack"); inc.pendingAmount = 55;
+    else if (kind === "block") {
+      const inc = makeFighter("sneaky_sora", 55, "zoro", CLASH_X, "L"); inc.state = "clash"; inc.clashT = 0.1; inc.blocked = true; setAnim(inc, "attack"); inc.frame = 2; inc.pendingAmount = 55;
+      setAnim(state.champ, "attack"); state.champ._returnIdle = true;
+      state.incoming = inc; state.phase = "takeover"; state.block = 0.9; state.flash = 0.6;
+      const cp = { x: state.champ.x + 70, y: GROUND - 165 }; state.contact = cp;
+      spawnSparks(cp.x, cp.y, COL.cyan, 22); spawnPop(cp.x, cp.y - 55, "BLOCKED!", COL.cyan); spawnPop(state.champ.x, GROUND - 430, "4x COMBO!", COL.gold);
+    } else {
+      const inc = makeFighter("sneaky_sora", 55, "zoro", CLASH_X, "L"); inc.state = "clash"; inc.clashT = 0.1; setAnim(inc, "attack"); inc.frame = 2; inc.pendingAmount = 55;
       const old = makeFighter("hardworker706", 42, "luffy", CHAMP_X+30, "R"); old.state="dead"; setAnim(old,"dead"); old.frame=2; old.alpha=0.8; old.vx=-260;
       state.outgoing = [old]; state.champ = null; state.incoming = inc; state.phase = "takeover";
       state.contact = {...CONTACT}; state.flash = 0.85; spawnSparks(CONTACT.x,CONTACT.y,COL.pink,26); spawnPop(CONTACT.x,CONTACT.y-40,"NEW LEADER!","#fff2b0");
