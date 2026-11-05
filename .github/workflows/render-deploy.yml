@@ -1,0 +1,23 @@
+name: Render Auto-Deploy
+
+# On every push to main, ping Render's deploy hook so the live site updates
+# automatically (no more Manual Deploy). Requires a repo secret named
+# RENDER_DEPLOY_HOOK = the service's Deploy Hook URL (Render → service →
+# Settings → Deploy Hook).
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "RENDER_DEPLOY_HOOK secret is not set yet — skipping auto-deploy."
+            exit 0
+          fi
+          curl -fsSL -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+          echo "Render deploy triggered."

@@ -469,8 +469,6 @@
       ctx.beginPath(); ctx.ellipse(e.x, GROUND-130, 120*(1+ (1-state.champPulse)), 150, 0,0,Math.PI*2); ctx.stroke(); ctx.restore();
     }
     ctx.save(); ctx.shadowColor = COL.cyan; ctx.shadowBlur = 16; drawFighter(e, SCALE); ctx.restore();
-    // crown over leader
-    drawCrown(e.x, GROUND - 70 * SCALE);
   }
 
   function drawCrown(x, y) {
@@ -556,7 +554,7 @@
   }
 
   function drawComboBadge() {
-    if (state.combo <= 1 || !state.champ) return;
+    if (state.combo <= 1 || !state.champ || state.phase === "winner") return;
     ctx.save(); ctx.textAlign = "center";
     ctx.font = "18px 'Press Start 2P', monospace"; ctx.fillStyle = comboColor();
     ctx.shadowColor = comboColor(); ctx.shadowBlur = 14;
@@ -567,34 +565,57 @@
   function drawNameplate() {
     const e = state.champ || (state.phase === "takeover" && state.incoming) || null;
     if (!e || !e.name) return;
-    const boxW = 560, boxH = 80, x = (W-boxW)/2, y = H - 118;
+    const boxW = 460, boxH = 56, x = (W-boxW)/2, y = H - 70;   // lower on screen
     const fl = state.nameFlash;
     ctx.save();
     ctx.fillStyle = "rgba(8,6,18,0.82)"; ctx.fillRect(x, y, boxW, boxH);
     ctx.lineWidth = 3; ctx.strokeStyle = COL.pink; ctx.shadowColor = COL.pink; ctx.shadowBlur = 14 + fl*24;
     ctx.strokeRect(x, y, boxW, boxH); ctx.shadowBlur = 0;
-    ctx.strokeStyle = "rgba(255,45,126,0.35)"; ctx.strokeRect(x+6, y+6, boxW-12, boxH-12);
+    ctx.strokeStyle = "rgba(255,45,126,0.35)"; ctx.strokeRect(x+5, y+5, boxW-10, boxH-10);
     ctx.textAlign = "center";
-    ctx.font = "11px 'Press Start 2P', monospace"; ctx.fillStyle = "#8fe9ff";
-    ctx.fillText("👑  CURRENT LEADER", W/2, y - 12);
     ctx.font = "24px 'Press Start 2P', monospace"; ctx.lineWidth = 6; ctx.strokeStyle = "#000";
-    const label = e.name + "   $" + (e.amount || state.topBid);
-    ctx.strokeText(label, W/2, y + 52);
-    ctx.shadowColor = "#fff"; ctx.shadowBlur = fl*18; ctx.fillStyle = "#fff"; ctx.fillText(label, W/2, y + 52);
+    ctx.strokeText(e.name, W/2, y + 38);
+    ctx.shadowColor = "#fff"; ctx.shadowBlur = fl*18; ctx.fillStyle = "#fff"; ctx.fillText(e.name, W/2, y + 38);
     ctx.restore(); ctx.shadowBlur = 0;
   }
 
-  function drawFeed() {
-    if (!state.feed.length) return;
-    const x = W - 300, y0 = 150;
-    ctx.save(); ctx.textAlign = "left"; ctx.font = "10px 'Press Start 2P', monospace";
-    ctx.fillStyle = "#6fbfe0"; ctx.fillText("RECENT BIDS", x, y0 - 16);
-    for (let i=0;i<state.feed.length;i++){
-      const f = state.feed[i], y = y0 + i*30, a = Math.max(.25, 1 - i*0.18);
-      ctx.globalAlpha = a; ctx.fillStyle = COL.gold; ctx.fillRect(x, y-10, 8, 12);
-      ctx.fillStyle = "#dff2ff"; ctx.fillText(`${f.name}  $${f.amount}`, x+16, y);
+  // Box listing the bidders (names only), current leader highlighted; shows the
+  // WINNER at the end. Position via BOX_X / BOX_Y so it's easy to nudge.
+  const BOX_X = W - 320, BOX_Y = 70, BOX_W = 290, BOX_LH = 30;
+  function drawBiddersBox() {
+    const names = [...new Set(state.feed.map(f => f.name))];   // unique, newest first
+    if (!names.length && state.phase !== "winner") return;
+    const rows = Math.min(names.length, 6);
+    const won = state.phase === "winner" && state.winner;
+    const bh = 42 + rows * BOX_LH + (won ? 44 : 10);
+    const leader = state.champ ? state.champ.name : (state.incoming ? state.incoming.name : null);
+    ctx.save();
+    ctx.fillStyle = "rgba(8,6,18,0.78)"; ctx.fillRect(BOX_X, BOX_Y, BOX_W, bh);
+    ctx.lineWidth = 2; ctx.strokeStyle = COL.cyan; ctx.shadowColor = COL.cyan; ctx.shadowBlur = 10;
+    ctx.strokeRect(BOX_X, BOX_Y, BOX_W, bh); ctx.shadowBlur = 0;
+    ctx.textAlign = "left";
+    ctx.font = "13px 'Press Start 2P', monospace"; ctx.fillStyle = COL.cyan;
+    ctx.fillText("BIDDERS", BOX_X + 16, BOX_Y + 26);
+    ctx.font = "12px 'Press Start 2P', monospace";
+    let y = BOX_Y + 54;
+    for (let i = 0; i < rows; i++) {
+      const nm = names[i];
+      const isLeader = !won && nm === leader;
+      ctx.globalAlpha = Math.max(0.3, 1 - i * 0.13);
+      if (isLeader) { ctx.fillStyle = COL.gold; ctx.fillText("▶ " + nm, BOX_X + 16, y); }
+      else { ctx.fillStyle = "#dff2ff"; ctx.fillText(nm, BOX_X + 30, y); }
+      y += BOX_LH;
     }
-    ctx.globalAlpha = 1; ctx.restore();
+    ctx.globalAlpha = 1;
+    if (won) {
+      ctx.strokeStyle = "rgba(255,207,77,0.5)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(BOX_X + 12, y - 6); ctx.lineTo(BOX_X + BOX_W - 12, y - 6); ctx.stroke();
+      ctx.fillStyle = COL.gold; ctx.shadowColor = COL.gold; ctx.shadowBlur = 12;
+      ctx.font = "13px 'Press Start 2P', monospace";
+      ctx.fillText("👑 " + state.winner.name, BOX_X + 16, y + 22);
+      ctx.shadowBlur = 0;
+    }
+    ctx.restore();
   }
 
   function drawWinner() {
@@ -618,7 +639,7 @@
     // winner name
     ctx.save(); ctx.textAlign = "center";
     ctx.font = "28px 'Press Start 2P', monospace"; ctx.lineWidth = 7; ctx.strokeStyle = "#000";
-    const label = w.name + "  ·  $" + (w.amount || state.topBid);
+    const label = w.name;
     ctx.strokeText(label, W/2, 232);
     ctx.shadowColor = "#fff"; ctx.shadowBlur = 16; ctx.fillStyle = "#fff"; ctx.fillText(label, W/2, 232);
     ctx.restore(); ctx.shadowBlur = 0;
@@ -641,7 +662,7 @@
     ctx.restore();
     if (state.flash > 0.5) { ctx.fillStyle = `rgba(255,255,255,${(state.flash-0.5)*0.4})`; ctx.fillRect(0,0,W,H); }
     // HUD
-    drawHighBid(); drawComboBadge(); drawFeed(); drawPops(); drawNameplate();
+    drawComboBadge(); drawBiddersBox(); drawPops(); drawNameplate();
     drawWinner();
     drawConfetti();
     requestAnimationFrame(frame);
@@ -711,8 +732,10 @@
   autoChk.onchange = syncAuto; autoSpeed.oninput = () => autoChk.checked && syncAuto();
 
   window.addEventListener("keydown", (e) => {
+    if (e.key === "w" || e.key === "W") endAuction();   // manual WINNER (works live too)
+    if (e.key === "r" || e.key === "R") resetAll();      // reset for the next auction
+    if (!SHOW_DEMO) return;                              // the keys below are demo-only
     if (e.key === "d" || e.key === "D") panel.classList.toggle("hidden");
-    if (e.key === "w" || e.key === "W") endAuction();
     if (e.key === "c" || e.key === "C") holdBid();
     if (e.code === "Space" && document.activeElement !== nameInput && document.activeElement !== amtInput) { e.preventDefault(); newBid(); }
   });
@@ -741,7 +764,7 @@
     if (!assetsReady) { setTimeout(kickoff, 100); return; }
     const pose = params.get("pose");
     if (pose) { buildPose(pose); return; }
-    setTimeout(() => enqueueBid("hardworker706", 42), 400);
+    if (SHOW_DEMO) setTimeout(() => enqueueBid("hardworker706", 42), 400);  // demo only
     if (AUTO > 0) setInterval(() => { if (state.champ && Math.random()<0.4) holdBid(); else enqueueBid(randName(), null); }, AUTO);
   })();
 

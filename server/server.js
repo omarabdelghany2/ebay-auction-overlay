@@ -134,6 +134,12 @@ function handleEbayPayload(raw) {
     const evt = asText(deepGet(obj, "NotificationEventName")) || "(unknown)";
     const sig = signatureState(obj);
     if (sig === "invalid") console.warn("⚠ eBay signature INVALID — check DevID/AppID/CertID");
+    // end-of-auction events -> trigger the WINNER screen automatically
+    if (/EndOfAuction|ItemSold|AuctionCheckoutComplete/i.test(evt)) {
+      console.log(`eBay notification: ${evt} · signature=${sig} -> WINNER`);
+      broadcast({ type: "end" });
+      return;
+    }
     const bid = extractBidFromEbay(obj);
     console.log(`eBay notification: ${evt} · signature=${sig} · bid=${bid ? JSON.stringify(bid) : "none"}`);
     if (bid) sendBid(bid.username, bid.amount); else console.log(text.slice(0, 500));
