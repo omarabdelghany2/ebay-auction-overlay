@@ -661,14 +661,21 @@
     if (d.type === "end-auction") endAuction();
   });
   if (WS_URL) {
-    try {
-      const ws = new WebSocket(WS_URL);
-      ws.onmessage = (ev) => { try { const d = JSON.parse(ev.data);
-        if (d.type === "bid") enqueueBid(d.username, d.amount);
-        if (d.type === "end" || d.type === "winner") endAuction();
-      } catch(_){} };
-      ws.onopen = () => console.log("[AuctionOverlay] WS connected", WS_URL);
-    } catch(e) { console.warn("WS failed", e); }
+    let ws, reconnectTimer;
+    function connectWS() {
+      try {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => console.log("[AuctionOverlay] WS connected", WS_URL);
+        ws.onmessage = (ev) => { try { const d = JSON.parse(ev.data);
+          if (d.type === "bid") enqueueBid(d.username, d.amount);
+          if (d.type === "end" || d.type === "winner") endAuction();
+        } catch(_){} };
+        // auto-reconnect so the overlay recovers if the server restarts/sleeps
+        ws.onclose = () => { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connectWS, 2000); };
+        ws.onerror = () => { try { ws.close(); } catch(_){} };
+      } catch(e) { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connectWS, 2000); }
+    }
+    connectWS();
   }
 
   /* =====================================================================
